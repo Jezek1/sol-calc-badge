@@ -62,7 +62,9 @@ for trigonometric equations.
 
 ## Install on Solana OS 2.4
 
-1. Open the App Store submission page at <https://solana.com/breakpoint/badge/apps/submit>.
+1. Open the badge site at <https://solana.com/breakpoint/badge> and follow the
+   App Store → submit/publish link (the store also links the API reference at
+   `/apps/docs`).
 2. Upload this folder (or a zip of it). `main.lua` is the entry point; the form
    reads `app.json`, and the store compiles both with Lua 5.5 before accepting.
 3. Publish, then install from the badge's App Store (or scan the store listing
