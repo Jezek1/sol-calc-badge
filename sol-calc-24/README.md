@@ -1,5 +1,10 @@
 # SOL CALC 2.4 — Solana OS 2.4+ build
 
+> The same 2.4 app is also the repo root `main.lua` / `app.json`. If the 2.4
+> emulator reports `main.lua:33: attempt to index a nil value (local 'g')`, it
+> loaded the legacy `v1/main.lua` or `scripts/sol_calc.lua` instead — load this
+> `main.lua`.
+
 This is the rebuild for the **current** Solana OS App Store API (Lua 5.5,
 `ui` / `sys`, 320×218 screen). The original `main.lua` in the repo root targets
 the older DEF CON `badge.gfx` / `on_button` runtime and will **not** run on 2.4;

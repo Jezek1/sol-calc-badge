@@ -1,37 +1,42 @@
-# SOL CALC — Solana OS badge calculator
+# SOL CALC — badge calculator
 
-> **Solana OS 2.4 / current App Store?** Use [`sol-calc-24/`](sol-calc-24/) —
-> it is a full rebuild for the Lua 5.5 `ui` / `sys` / `on_key` API (320×218).
-> The root `main.lua` below targets the older DEF CON `badge.gfx` / `on_button`
-> runtime and will not start on 2.4. See [sol-calc-24/README.md](sol-calc-24/README.md)
-> for install and submission steps.
+Two builds live in this repo:
 
-Single-file Lua app for the Solana OS SDK that exposes `badge.gfx`, `badge.input`
-and the `on_start` / `on_update` / `on_draw` / `on_button` callbacks
-(320×240, six buttons). No external modules, no `loadstring`, no blocking loop.
+| Folder | Target | Entry |
+| --- | --- | --- |
+| **repo root** | **Solana OS 2.4+** (Lua 5.5 `ui`/`sys`/`on_key`, 320×218) | `main.lua` + `app.json` |
+| `sol-calc-24/` | Same 2.4 build, kept as a standalone upload folder | `main.lua` + `app.json` |
+| `v1/` | Legacy DEF CON runtime (`badge.gfx`, `on_button`, 320×240) | `main.lua` + `app.ini` |
+| `scripts/` | Legacy store entry for the v1 App Store | `sol_calc.lua` |
 
-- `main.lua` — the complete app (~47 KB, within the store's 96 KB per-script cap)
-- `app.ini` — optional launcher metadata
+**If you got `main.lua:33: attempt to index a nil value (local 'g')` in the
+2.4 emulator, you loaded the v1 file.** Use the root `main.lua` (or the one in
+`sol-calc-24/`), not `v1/main.lua` or `scripts/sol_calc.lua`. The root file is
+now the 2.4 build, so uploading/cloning the repo root picks the right one.
 
-## Controls
+## 2.4 build (root / `sol-calc-24/`)
+
+- `main.lua` — complete single-file Lua 5.5 app (~50 KB, under the 64 KB cap)
+- `app.json` — store manifest, no permissions
+- `sol-calc-24/test_mock.py` — optional off-device test harness (`pip install lupa`)
+
+### Controls
 
 | Input | Action |
 | --- | --- |
-| D-pad | Move the yellow keypad focus (6×4 grid) |
-| `up` from top row | Focus the five page tabs; `left`/`right` switch page |
-| `a` (SELECT) | Insert the focused token / run the focused action |
-| `b` (CANCEL) | Backspace. **Hold > 0.65 s** to clear the expression |
-| Hold `left`/`right` > 0.45 s | Move the text cursor in the input line |
-| Page 5 `◀C` / `C>` | Move the text cursor one character |
-| BOOT | Reserved by the OS — not used by this app |
+| D-pad | Move the highlighted keypad key / tab / history row / matrix cell |
+| `up` from the top key row | Focus the five page tabs; `left`/`right` changes page |
+| SELECT | Insert the focused token or run the focused action |
+| CANCEL | Backspace / go back. **Hold > 0.65 s** to clear the current buffer |
+| Hold `left`/`right` > 0.45 s | Move the text cursor in the expression line |
+| Page 5 `<C` / `C>` | Move the text cursor one character |
 
-Graph view: `left`/`right` pan, `up`/`down` zoom, `a` cycles detected features,
-`b` returns. History view: `up`/`down` scroll, `a` recalls, `b` returns.
-Matrix editor: `a` types the selected pad key, `CELL` switches between pad and
-cell focus, `EXE` commits a cell, `DIM` toggles 2×2/3×3, `A/B` switches matrix,
-`b` backspaces (hold to clear), `BACK` returns.
+Graph view: left/right pan, up/down zoom, SELECT cycles detected features,
+CANCEL returns. History: up/down scroll, SELECT recalls, CANCEL returns. Matrix
+editor: SELECT types, `CELL` switches pad/cell focus, `EXE` commits a cell,
+`DIM` toggles 2×2/3×3, `A/B` switches matrix, `BACK` returns.
 
-## Pages
+### Pages
 
 1. **BASIC** — digits, operators, `x`, `y`, `ANS`, `DEL`, `EXE`
 2. **SCI** — trig/inverse trig, `ln`, `log10`, `sqrt`, `abs`, `exp`, `pi`, `e`, `!`, DEG/RAD
@@ -39,59 +44,53 @@ cell focus, `EXE` commits a cell, `DIM` toggles 2×2/3×3, `A/B` switches matrix
 4. **MATR** — `DET`, `INV`, `TRANS`, `RREF`, `A`, `B`, matrix arithmetic, editor
 5. **TOOLS** — `GRAPH`, `HIST`, `CLRMEM`, angle mode, cursor keys, `EXIT`
 
-The solver keys insert ready-to-run examples (`SOLVE(x^2-4,x)`, etc.). Edit them
-with backspace / the cursor keys, or clear and type your own using the comma key
-on page 3. Implicit multiplication works: `2x`, `3sin(x)`, `(x+1)(x-1)`.
-Free `x`/`y` evaluate against `ANS` when you press `EXE`; inside solvers they are
-the independent variable. QUAD prints complex roots as `re +/- imi`.
+### Solving an equation
 
-The graph engine samples 161 points, auto-scales from 5th/95th percentiles (so
-asymptotic spikes do not flatten the curve), and marks roots, the y-intercept,
-local minima/maxima, vertical asymptotes and removable holes. History is capped
-at 20 entries; `CLRMEM` also resets `ANS`, both matrices and garbage-collects.
+Reach page 3 (`up`, `right`, `right`, `down`), select `SOLVE`, then `EXE`:
 
-## Test in the Solana OS web emulator
-
-1. Open <https://solanadefcon.com/badge/> (virtual badge) and note the 8-character
-   badge ID shown beside the screen.
-2. Put this file in a **public GitHub repo** as `scripts/sol_calc.lua` (the store
-   uses the filename as the app id and the first `--` comment as the description).
-3. Open <https://solanadefcon.com/store/>, enter `owner/repo`, scan, paste the
-   badge ID and send. Accept the offer on the virtual badge (or on hardware under
-   Settings → Identity for the ID).
-4. Launch **sol_calc** from the launcher. Arrow keys move, `Z`/Enter is SELECT,
-   `Esc`/`X` is CANCEL. `print`/`badge.log` output appears in the console pane.
-
-## Put it on hardware
-
-- Same store flow, using the badge's 8-character ID from **Settings → Identity**.
-- Or copy the folder to the badge filesystem as `/apps/sol_calc/` containing
-  `main.lua` and `app.ini` (over USB/serial or by pushing the files), then launch
-  it from the app launcher. Firmware flashing itself is documented at
-  <https://solanadefcon.com/flash/> — set the USB switch to **UART** first.
-
-## Sanity-check off-device
-
-Any Lua 5.4/5.5 interpreter can load the file if a minimal `badge` stub exists:
-
-```lua
-badge = {
-  millis = function() return 0 end,
-  log = function() end,
-  system = { exit = function() end },
-  led = { take = function() end },
-  input = { down = function() return false end, held_ms = function() return 0 end },
-  gfx = setmetatable({
-    color = function() return 0 end, gradient = function() return 0 end,
-    text = function() end, text_center = function() end, line = function() end,
-    clear = function() end, rect = function() end, fill_rect = function() end,
-    circle = function() end, fill_circle = function() end,
-    triangle = function() end, fill_triangle = function() end,
-  }, { __index = function() return 0 end }),
-}
-assert(loadfile("main.lua"))
+```
+SOLVE(x^2-4,x)   -> -2        SOLVE(x^2-4,3) -> 2
+3x+5-20          -> 5         QUAD(1,-3,2)   -> x=2 , 1
 ```
 
-The parser and math engines were also exercised with `SOLVE`, `QUAD`, `DERIV`,
-`INTEG`, `LIMIT`, 2×2/3×3 matrices and graph feature detection in a mocked
-runtime; all four views were drawn without errors.
+`SOLVE(f(x),guess)` expects `f(x) = 0` rearranged with everything on the left;
+the guess `x` means 0. Implicit multiplication works (`2x`, `3sin(x)`,
+`(x+1)(x-1)`). Use page 2's `RAD/DEG` for trig equations. The graph engine
+samples 161 points, auto-scales, and marks roots, intercepts, extrema,
+asymptotes and holes. History is capped at 20 entries; `CLRMEM` resets `ANS`
+and both matrices.
+
+### Install / test on Solana OS 2.4
+
+1. Open <https://solana.com/breakpoint/badge> and use **Try in emulator** with
+   the root `main.lua` (or upload `sol-calc-24/` as a folder/zip).
+2. For the App Store, submit the root folder (`main.lua` + `app.json`) — the
+   store compiles it with Lua 5.5 and rejects code that doesn't compile.
+3. No permissions are requested: the app only draws, reads buttons, and uses
+   `sys.millis()` / `sys.keys()`.
+
+Off-device check:
+
+```sh
+pip install lupa
+python3 sol-calc-24/test_mock.py
+python3 -c "import lupa; lupa.LuaRuntime().execute('assert(load(open(\"main.lua\").read()))')"
+```
+
+### 2.4 API notes
+
+The 2.4 build uses one `ui.canvas` plus `ui.label` objects at 320×218,
+`ui.hint`/`ui.toast`, top-level UI construction with `on_key(key, rep)` /
+`on_tick(ms)` / `on_exit()`, `sys.keys()` for long-press detection, and
+`sys.millis()` / `sys.exit()`. `collectgarbage("collect")` is unavailable on
+2.4, so `CLRMEM` just drops its tables. Graph recomputation happens only on
+entry, pan and zoom, keeping the heaviest callback around 94k of the allowed
+200k VM instructions.
+
+## Legacy v1 build (`v1/`, `scripts/`)
+
+For the old DEF CON `badge.gfx` / `on_button` runtime only (Lua 5.4, 320×240).
+It will **not** start on 2.4. The old store flow is unchanged: enter
+`Jezek1/sol-calc-badge` at <https://solanadefcon.com/store/>, scan, paste the
+8-character badge ID, send, and accept on the badge. The v1 emulator is at
+<https://solanadefcon.com/badge/>.

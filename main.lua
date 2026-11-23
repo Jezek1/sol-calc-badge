@@ -1,50 +1,48 @@
--- Scientific & Graphing Calculator: algebra, calculus, matrices, graphs, history.
+-- SOL CALC 2.4 - Scientific & Graphing Calculator for Solana OS 2.4+
 --[[
-  sol_calc - Scientific & Graphing Calculator for Solana OS (BP26 badge)
+  sol-calc-24 - Lua 5.5 app for the current Solana OS badge API.
   ---------------------------------------------------------------------
-  Single-file Lua app for the badge.gfx / on_button SDK (320x240, 6 keys).
+  Screen: 320 x 218 app area (ui.W / ui.H), drawn with one ui.canvas plus
+  ui.label objects. Input is on_key("up"|"down"|"left"|"right"|"select"|
+  "back", rep) and on_tick(ms); held keys are read with sys.keys().
   Pure Lua parser, solvers, matrix algebra and graphing engine. No deps.
 
   Sections:
-    1. SDK aliases, colours, helpers
-    2. Application state
-    3. Keypad page definitions
-    4. Tokenizer + recursive-descent parser (AST)
-    5. Evaluator, scientific functions, solvers, matrix algebra
-    6. Graph engine (auto-scale, sampling, feature detection)
-    7. Drawing (calc, graph, history, matrix editor)
-    8. Input + lifecycle callbacks
+    1. State, helpers, keypad pages
+    2. Tokenizer + parser, evaluator, solvers, matrices  (ported unchanged)
+    3. Graph engine                                       (ported unchanged)
+    4. Canvas/label drawing
+    5. Input, actions and lifecycle callbacks
 ]]
 
 ------------------------------------------------------------------------
--- 1. SDK aliases, colours, helpers
+-- 1. State, helpers, keypad pages
 ------------------------------------------------------------------------
 
-local g  = badge.gfx
-local bi = badge.input
-
-local W, H = 320, 240
+local W, H = ui.W or 320, ui.H or 218
 local floor, abs, sqrt, huge = math.floor, math.abs, math.sqrt, math.huge
 local sub, format = string.sub, string.format
 
-local function rgb(r, gg, b) return g.color(r, gg, b) end
-
+-- Canvas colours: theme names where possible, fixed RGB where a distinct
+-- shade is needed. Label colours are theme names (see COL below).
 local C = {
-  BG      = g.BG      or rgb(12, 10, 20),
-  PANEL   = g.PANEL   or rgb(28, 25, 42),
-  PANEL2  = rgb(42, 38, 60),
-  BORDER  = g.BORDER  or rgb(78, 72, 102),
-  MUTED   = g.MUTED   or rgb(150, 146, 170),
-  WHITE   = g.WHITE   or rgb(255, 255, 255),
-  BLACK   = g.BLACK   or rgb(0, 0, 0),
-  GREEN   = g.GREEN   or rgb(90, 235, 150),
-  RED     = g.RED     or rgb(245, 85, 95),
-  CYAN    = g.CYAN    or rgb(95, 225, 245),
-  YELLOW  = g.YELLOW  or rgb(250, 220, 90),
-  ORANGE  = g.ORANGE  or rgb(250, 155, 75),
-  PURPLE  = g.SOLANA_PURPLE  or rgb(150, 85, 245),
-  TEAL    = g.SOLANA_TEAL    or rgb(65, 215, 195),
-  MAGENTA = g.SOLANA_MAGENTA or rgb(245, 95, 205),
+  BG     = "bg",
+  PANEL  = "panel",
+  PANEL2 = 0x393357,
+  BORDER = "border",
+  MUTED  = "dim",
+  GRID   = 0x2B2840,
+  GREEN  = "green",
+  RED    = 0xF4555F,
+  CYAN   = "aqua",
+  YELLOW = "yellow",
+  PURPLE = "purple",
+  MAGENTA = "pink",
+}
+
+local COL = {
+  WHITE = "text", MUTED = "dim", GREEN = "green", RED = "orange",
+  CYAN = "aqua", YELLOW = "yellow", PURPLE = "purple", TEAL = "lime",
 }
 
 local function clamp(v, a, b)
@@ -62,8 +60,7 @@ local function fmt(v)
   if v == -huge then return "-inf" end
   if v ~= v then return "nan" end
   if v == floor(v) and abs(v) < 1e14 then return format("%.0f", v) end
-  local s = format("%.8g", v)
-  return s
+  return format("%.8g", v)
 end
 
 local function isclose(a, b, rel)
@@ -71,39 +68,40 @@ local function isclose(a, b, rel)
   return abs(a - b) <= rel * (1 + abs(a) + abs(b))
 end
 
-------------------------------------------------------------------------
--- 2. Application state  (all state kept in one small table)
-------------------------------------------------------------------------
+local function trunc(s, n)
+  if #s <= n then return s end
+  return sub(s, 1, n - 1) .. ".."
+end
 
 local HIST_MAX = 20
 local EXPR_MAX = 200
 
 local S = {
-  view = "calc",                 -- calc | graph | history | matrix
-  page = 1, tab = 1,             -- active keypad page (1..5)
-  focusArea = 1,                 -- 0 = page tabs, 1 = key grid
-  kr = 1, kc = 1,                -- focused key row / column (6 x 4)
+  view = "calc", builtView = "",
+  page = 1, tab = 1,           -- active keypad page (1..5)
+  focusArea = 1,               -- 0 = page tabs, 1 = key grid
+  kr = 1, kc = 1,              -- focused key row / column (6 x 4)
   expr = "", cursor = 1,
-  result = "", resColor = C.WHITE,
+  result = "Ready", resColor = COL.CYAN,
   ans = 0, ansSet = false,
-  deg = false,                   -- false = radians
+  deg = false,                 -- false = radians
   hist = {}, histSel = 1,
-  msg = "", msgUntil = 0,
-  bCleared = false, curRepeat = 0,
 
-  -- matrices: {mat=true, rows, cols, [row]={values}}
   matDim = 2,
   matA = nil, matB = nil,
-  editWhich = 1,                 -- 1 = MatA, 2 = MatB
+  editWhich = 1,               -- 1 = MatA, 2 = MatB
   editR = 1, editC = 1, editBuf = "",
-  editFocus = 1,                 -- 1 = pad, 2 = cells
-  epr = 1, epc = 1,              -- editor pad focus (4 x 5)
+  editFocus = 1,               -- 1 = pad, 2 = cells
+  epr = 1, epc = 1,            -- editor pad focus (4 x 5)
 
-  -- graph
   gxmin = -10, gxmax = 10,
   gymin = -1, gymax = 1,
   gexpr = "", gerr = "",
   gsamples = nil, gfeatures = {}, gsel = 0, goverlay = true,
+
+  backDown = false, backT0 = 0, backFired = false,
+  holdL = 0, holdR = 0, curRepeat = 0,
+  hint = "",
 }
 
 local function newMatrix(n)
@@ -119,14 +117,11 @@ end
 S.matA = newMatrix(2)
 S.matB = newMatrix(2)
 
-local function toast(text)
-  S.msg = text
-  S.msgUntil = badge.millis() + 1600
-end
+local function toast(text) ui.toast(text) end
 
 local function setResult(text, color)
   S.result = text
-  S.resColor = color or C.WHITE
+  S.resColor = color or COL.WHITE
 end
 
 local function addHistory(expr, result)
@@ -135,10 +130,7 @@ local function addHistory(expr, result)
   S.histSel = #S.hist
 end
 
-------------------------------------------------------------------------
--- 3. Keypad pages - 6 columns x 4 rows = 24 keys per page
-------------------------------------------------------------------------
-
+-- Keypad grids are 6 columns x 4 rows per page.
 local PAGES = {
   { -- 1: basic / algebra
     "7", "8", "9", "/", "^", "(",
@@ -174,14 +166,20 @@ local PAGES = {
 
 local TABNAMES = { "BASIC", "SCI", "CALC", "MATR", "TOOLS" }
 
--- The four special keys insert ready-to-run example calls; edit them with
--- <C / C> (or long-press left/right) and DEL.
 local TEMPLATES = {
   SOLVE = "SOLVE(x^2-4,x)",
   QUAD  = "QUAD(1,0,-4)",
   DERIV = "DERIV(sin(x),0)",
   INTEG = "INTEG(x^2,0,1)",
   LIMIT = "LIMIT(sin(x)/x,0)",
+}
+
+local MATRIX_PAD = {
+  "7", "8", "9", "CELL",
+  "4", "5", "6", "DIM",
+  "1", "2", "3", "A/B",
+  "0", ".", "-", "CLR",
+  "EXE", "BACK", "", "",
 }
 
 ------------------------------------------------------------------------
@@ -910,7 +908,7 @@ local function addFeature(list, kind, x, y, text)
 end
 
 local function rootNear(ast, env, a, b, fa)
-  for _ = 1, 40 do
+  for _ = 1, 24 do
     local m = (a + b) / 2
     local fm = gEval(ast, env, m)
     if fm == nil then return m end
@@ -920,7 +918,7 @@ local function rootNear(ast, env, a, b, fa)
 end
 
 local function extremumNear(ast, env, a, b, wantMin)
-  for _ = 1, 40 do
+  for _ = 1, 24 do
     local m1 = a + (b - a) / 3
     local m2 = b - (b - a) / 3
     local f1, f2 = gEval(ast, env, m1), gEval(ast, env, m2)
@@ -1041,33 +1039,144 @@ local function zoomGraph(factor)
 end
 
 ------------------------------------------------------------------------
--- 7. Drawing
+-- 4. Canvas + label drawing
 ------------------------------------------------------------------------
 
-local function trunc(s, n)
-  if #s <= n then return s end
-  return sub(s, 1, n - 1) .. ".."
-end
+local cv
+local L = {}
 
-local function gradientRule()
-  for x = 0, W - 1, 4 do g.line(x, 0, x + 3, 2, g.gradient(x / W)) end
+local function addLabel(name, x, y, text, size, color, w, align)
+  local o = { size = size or 12, color = color or "text" }
+  if w then o.w = w end
+  if align then o.align = align end
+  local l = ui.label(x, y, text, o)
+  L[name] = l
+  return l
 end
 
 local function keyColor(label)
-  if label == "DEL" or label == "CLRMEM" or label == "EXIT" then return C.RED end
-  if label == "CLR" then return C.ORANGE end
-  if label == "EXE" then return C.GREEN end
-  if label == "GRAPH" or label == "HIST" or label == "EDIT" then return C.CYAN end
-  if label == "<C" or label == "C>" or label == "MODE" or label == "RAD/DEG" then return C.MUTED end
-  if label == "2x2" or label == "3x3" or label == "DIM" then return C.YELLOW end
-  if label:match("[A-Z]") and label ~= "ANS" then return C.TEAL end
-  if label:match("[%dig%.]") then return C.WHITE end
-  return C.CYAN
+  if label == "DEL" or label == "CLRMEM" or label == "EXIT" or label == "BACK" then
+    return COL.RED
+  end
+  if label == "CLR" or label == "2x2" or label == "3x3" or label == "DIM" then
+    return COL.YELLOW
+  end
+  if label == "EXE" then return COL.GREEN end
+  if label == "GRAPH" or label == "HIST" or label == "EDIT" then return COL.CYAN end
+  if label == "<C" or label == "C>" or label == "MODE" or label == "RAD/DEG" then
+    return COL.MUTED
+  end
+  if label:match("[A-Z]") and label ~= "ANS" then return COL.TEAL end
+  if label:match("[%dig%.]") then return COL.WHITE end
+  return COL.CYAN
+end
+
+local function buildCalc()
+  addLabel("expr", 5, 4, "", 20, "text")
+  addLabel("status", 5, 30, "", 12, "dim")
+  addLabel("result", 5, 46, "", 20, "text")
+  for i = 1, 5 do
+    local x = 4 + (i - 1) * 62
+    addLabel("tab" .. i, x, 74, i .. " " .. TABNAMES[i], 12, "dim", 60, "center")
+  end
+  local cw, ch, x0, y0 = (W - 8) / 6, 27, 4, 92
+  for i = 1, 24 do
+    local row, col = floor((i - 1) / 6), (i - 1) % 6
+    local lab = PAGES[S.page][i]
+    addLabel("key" .. i, x0 + col * cw, y0 + row * ch + 6, lab, 12,
+             keyColor(lab), cw - 2, "center")
+  end
+end
+
+local function buildGraph()
+  addLabel("title", 5, 4, "", 12, "text")
+  addLabel("bounds", 5, 18, "", 12, "dim")
+  addLabel("legend", 5, 168, "", 12, "dim")
+  addLabel("readout", 5, 183, "", 12, "text")
+end
+
+local function buildHistory()
+  addLabel("title", 4, 4, "", 12, "text", W - 8, "center")
+  for i = 1, 7 do
+    addLabel("row" .. i, 8, 26 + (i - 1) * 25, "", 12, "dim")
+  end
+end
+
+local function buildMatrix()
+  addLabel("title", 5, 4, "", 12, "text")
+  addLabel("buf", 5, 18, "", 12, "yellow")
+  for i = 1, 9 do
+    addLabel("cell" .. i, 0, 0, "", 14, "text", 84, "center")
+  end
+  for i = 1, 20 do
+    local row, col = floor((i - 1) / 4), (i - 1) % 4
+    local lab = MATRIX_PAD[i]
+    if lab ~= "" then
+      addLabel("pad" .. i, 10 + col * 60, 137 + row * 16, lab, 12,
+               keyColor(lab), 58, "center")
+    end
+  end
+end
+
+local function buildView()
+  ui.clear()
+  L = {}
+  cv = ui.canvas(0, 0, W, H, { color = "bg" })
+  ui.gradient(0, 0, W, 2)
+  S.builtView = S.view
+  if S.view == "graph" then buildGraph()
+  elseif S.view == "history" then buildHistory()
+  elseif S.view == "matrix" then buildMatrix()
+  else buildCalc() end
+end
+
+-- Canvas primitives -----------------------------------------------------
+
+local function fill(x, y, w, h, c)
+  if w > 0 and h > 0 then
+    cv:rect(floor(x), floor(y), floor(w), floor(h), c)
+  end
+end
+
+local function outline(x, y, w, h, c)
+  fill(x, y, w, 1, c)
+  fill(x, y + h - 1, w, 1, c)
+  fill(x, y, 1, h, c)
+  fill(x + w - 1, y, 1, h, c)
+end
+
+local function ln(x1, y1, x2, y2, c)
+  cv:line(floor(x1), floor(y1), floor(x2), floor(y2), c)
+end
+
+local function disc(cx, cy, r, c)
+  cx, cy = floor(cx), floor(cy)
+  for y = -r, r do
+    for x = -r, r do
+      if x * x + y * y <= r * r then cv:pixel(cx + x, cy + y, c) end
+    end
+  end
+end
+
+local function circle(cx, cy, r, c)
+  cx, cy = floor(cx), floor(cy)
+  for y = -r - 1, r + 1 do
+    for x = -r - 1, r + 1 do
+      local d = sqrt(x * x + y * y)
+      if d >= r - 0.7 and d <= r + 0.7 then cv:pixel(cx + x, cy + y, c) end
+    end
+  end
+end
+
+local function triangle(x1, y1, x2, y2, x3, y3, c)
+  ln(x1, y1, x2, y2, c)
+  ln(x2, y2, x3, y3, c)
+  ln(x3, y3, x1, y1, c)
 end
 
 local function visibleExpr()
   local s, c = S.expr, S.cursor
-  local maxc = 27
+  local maxc = 24
   local start = 1
   if c > maxc - 5 then start = c - (maxc - 5) end
   if #s - start + 1 > maxc then start = #s - maxc + 1 end
@@ -1082,48 +1191,33 @@ local function visibleExpr()
   return part
 end
 
-local function drawTabs()
-  local tw, x0, y0 = 62, 4, 76
+local function paintCalc()
+  cv:clear("bg")
+  ln(0, 70, W, 70, C.BORDER)
+
   for i = 1, 5 do
-    local x = x0 + (i - 1) * tw
+    local x = 4 + (i - 1) * 62
     local on = (i == S.tab)
     local focused = (S.focusArea == 0 and i == S.tab)
-    g.fill_rect(x, y0, tw - 2, 16, focused and C.PANEL2 or (on and C.PANEL or C.BG))
-    g.rect(x, y0, tw - 2, 16, on and C.PURPLE or C.BORDER)
-    g.text_center(i .. " " .. TABNAMES[i], x + (tw - 2) / 2, y0 + 3,
-                  on and C.WHITE or C.MUTED, 1)
+    fill(x, 72, 60, 18, focused and C.PANEL2 or (on and C.PANEL or C.BG))
+    outline(x, 72, 60, 18, on and C.PURPLE or C.BORDER)
+    L["tab" .. i]:color(on and (focused and COL.YELLOW or COL.WHITE) or COL.MUTED)
   end
-end
 
-local function drawKeypad()
-  local cw, ch, x0, y0 = (W - 8) / 6, 32, 4, 96
+  local cw, ch, x0, y0 = (W - 8) / 6, 27, 4, 92
   for i = 1, 24 do
-    local row = floor((i - 1) / 6)
-    local col = (i - 1) % 6
-    local x = x0 + col * cw
-    local y = y0 + row * ch
-    local label = PAGES[S.page][i]
+    local row, col = floor((i - 1) / 6), (i - 1) % 6
+    local x, y = x0 + col * cw, y0 + row * ch
     local focused = (S.focusArea == 1 and row + 1 == S.kr and col + 1 == S.kc)
-    g.fill_rect(x, y, cw - 2, ch - 2, focused and C.PANEL2 or C.PANEL)
-    g.rect(x, y, cw - 2, ch - 2, focused and (C.YELLOW) or C.BORDER)
-    g.text_center(label, x + (cw - 2) / 2, y + 9, keyColor(label), 1)
+    fill(x, y, cw - 2, ch - 2, focused and C.PANEL2 or C.PANEL)
+    outline(x, y, cw - 2, ch - 2, focused and C.YELLOW or C.BORDER)
   end
-end
 
-local function drawCalc()
-  g.clear(C.BG)
-  gradientRule()
-  g.text(visibleExpr(), 6, 9, C.WHITE, 2)
-  g.text((S.deg and "DEG" or "RAD") .. "   [PAGE " .. S.page .. "/5]"
-         .. "   ANS=" .. (S.ansSet and fmt(S.ans) or "-"), 6, 28, C.MUTED, 1)
-  local rs = S.result
-  if #rs > 27 then g.text(trunc(rs, 52), 6, 47, S.resColor, 1)
-  else g.text(rs, 6, 45, S.resColor, 2) end
-  g.line(0, 72, W, 72, C.BORDER)
-  drawTabs()
-  drawKeypad()
-  g.text(trunc("A=SEL  B=DEL(hold CLR)  hold <L/R>=cursor  " .. S.msg, 52),
-         4, 228, S.msg ~= "" and C.YELLOW or C.MUTED, 1)
+  L.expr:text(visibleExpr())
+  L.status:text((S.deg and "DEG" or "RAD") .. "   [PAGE " .. S.page .. "/5]"
+                .. "   ANS=" .. (S.ansSet and fmt(S.ans) or "-"))
+  L.result:text(trunc(S.result, 28))
+  L.result:color(S.resColor)
 end
 
 local function niceStep(range)
@@ -1137,34 +1231,33 @@ local function niceStep(range)
   return 10 * p
 end
 
-local function drawGraph()
-  g.clear(C.BG)
-  gradientRule()
-  g.text(trunc("f(x)=" .. S.gexpr, 52), 5, 6, C.WHITE, 1)
-  g.text(trunc("x[" .. fmt(S.gxmin) .. "," .. fmt(S.gxmax) .. "]  y["
-        .. fmt(S.gymin) .. "," .. fmt(S.gymax) .. "]", 52), 5, 19, C.MUTED, 1)
-
-  local px0, py0, px1, py1 = 4, 34, 315, 194
+local function paintGraph()
+  cv:clear("bg")
+  local px0, py0, px1, py1 = 4, 32, 315, 164
   local pw, ph = px1 - px0, py1 - py0
   local function PX(x) return px0 + (x - S.gxmin) / (S.gxmax - S.gxmin) * pw end
   local function PY(y) return py1 - (y - S.gymin) / (S.gymax - S.gymin) * ph end
 
-  g.fill_rect(px0, py0, pw, ph, C.BG)
-  g.rect(px0, py0, pw, ph, C.BORDER)
+  fill(px0, py0, pw + 1, ph + 1, C.BG)
+  outline(px0, py0, pw + 1, ph + 1, C.BORDER)
+  L.title:text(trunc("f(x)=" .. S.gexpr, 46))
+  L.bounds:text(trunc("x[" .. fmt(S.gxmin) .. "," .. fmt(S.gxmax) .. "]  y["
+                      .. fmt(S.gymin) .. "," .. fmt(S.gymax) .. "]", 46))
+  L.legend:color(COL.MUTED)
 
   if S.gerr ~= "" then
-    g.text_center(S.gerr, W / 2, 110, C.RED, 2)
-    g.text_center("B = back", W / 2, 140, C.MUTED, 1)
+    L.legend:color(COL.RED)
+    L.legend:text(S.gerr)
+    L.readout:text("CANCEL = back")
     return
   end
 
-  local sx = niceStep(S.gxmax - S.gxmin)
-  local sy = niceStep(S.gymax - S.gymin)
+  local sx, sy = niceStep(S.gxmax - S.gxmin), niceStep(S.gymax - S.gymin)
   local v = floor(S.gxmin / sx) * sx
   while v <= S.gxmax do
     local xx = floor(PX(v))
     if xx >= px0 and xx <= px1 then
-      g.line(xx, py0, xx, py1, abs(v) < sx / 2 and C.MUTED or g.color(38, 36, 52))
+      ln(xx, py0, xx, py1, abs(v) < sx / 2 and C.MUTED or C.GRID)
     end
     v = v + sx
   end
@@ -1172,12 +1265,12 @@ local function drawGraph()
   while v <= S.gymax do
     local yy = floor(PY(v))
     if yy >= py0 and yy <= py1 then
-      g.line(px0, yy, px1, yy, abs(v) < sy / 2 and C.MUTED or g.color(38, 36, 52))
+      ln(px0, yy, px1, yy, abs(v) < sy / 2 and C.MUTED or C.GRID)
     end
     v = v + sy
   end
-  if S.gymin < 0 and S.gymax > 0 then g.line(px0, PY(0), px1, PY(0), C.MUTED) end
-  if S.gxmin < 0 and S.gxmax > 0 then g.line(PX(0), py0, PX(0), py1, C.MUTED) end
+  if S.gymin < 0 and S.gymax > 0 then ln(px0, PY(0), px1, PY(0), C.MUTED) end
+  if S.gxmin < 0 and S.gxmax > 0 then ln(PX(0), py0, PX(0), py1, C.MUTED) end
 
   local sm = S.gsamples
   if sm then
@@ -1185,9 +1278,8 @@ local function drawGraph()
     for i = 2, GSAMP do
       local a, b = ys[i - 1], ys[i]
       if a and b and abs(b - a) < 0.9 * (S.gymax - S.gymin) then
-        local ay = clamp(PY(a), py0, py1)
-        local by = clamp(PY(b), py0, py1)
-        g.line(PX(sm.xs[i - 1]), ay, PX(sm.xs[i]), by, C.GREEN)
+        ln(PX(sm.xs[i - 1]), clamp(PY(a), py0, py1),
+           PX(sm.xs[i]), clamp(PY(b), py0, py1), C.GREEN)
       end
     end
   end
@@ -1198,119 +1290,118 @@ local function drawGraph()
       local x, y = PX(f.x), f.y and PY(f.y) or py1
       if x >= px0 and x <= px1 then
         if f.kind == "root" then
-          g.fill_circle(x, y, 3, C.GREEN)
+          disc(x, y, 3, C.GREEN)
         elseif f.kind == "yint" then
-          g.fill_rect(x - 3, y - 3, 6, 6, C.CYAN)
+          fill(x - 3, y - 3, 6, 6, C.CYAN)
         elseif f.kind == "min" or f.kind == "max" then
-          g.fill_triangle(x, y - 4, x - 4, y + 3, x + 4, y + 3, C.YELLOW)
+          triangle(x, y - 4, x - 4, y + 3, x + 4, y + 3, C.YELLOW)
         elseif f.kind == "asym" then
           local yy = py0
           while yy < py1 do
-            g.line(x, yy, x, yy + 5, C.RED)
+            ln(x, yy, x, yy + 5, C.RED)
             yy = yy + 10
           end
         elseif f.kind == "hole" then
-          g.circle(x, f.y and y or py0 + 12, 4, C.MAGENTA)
+          circle(x, f.y and y or py0 + 12, 4, C.MAGENTA)
         end
       end
     end
   end
 
-  g.text("o root   [] y-int   /\\ extrem   | asym   O hole", 5, 199, C.MUTED, 1)
-  local readout
+  L.legend:text("o root  [] y-int  /\\ extrem  | asym  O hole")
   if S.gsel > 0 and S.gfeatures[S.gsel] then
-    readout = "[" .. S.gsel .. "/" .. #S.gfeatures .. "] " .. S.gfeatures[S.gsel].text
+    L.readout:text("[" .. S.gsel .. "/" .. #S.gfeatures .. "] "
+                   .. S.gfeatures[S.gsel].text)
   else
-    readout = #S.gfeatures .. " features   A=cycle   B=back"
+    L.readout:text(#S.gfeatures .. " features   SELECT cycle")
   end
-  g.text(trunc(readout, 52), 5, 213, C.WHITE, 1)
-  g.text("L/R pan   U/D zoom   A cycle feature   B back", 5, 227, C.MUTED, 1)
 end
 
-local function drawHistory()
-  g.clear(C.BG)
-  gradientRule()
-  g.text_center("SESSION HISTORY  (" .. #S.hist .. "/" .. HIST_MAX .. ")",
-                W / 2, 8, C.WHITE, 1)
-  g.line(0, 22, W, 22, C.BORDER)
+local function paintHistory()
+  cv:clear("bg")
+  ln(0, 22, W, 22, C.BORDER)
+  L.title:text("SESSION HISTORY  (" .. #S.hist .. "/" .. HIST_MAX .. ")")
   if #S.hist == 0 then
-    g.text_center("No entries yet. Press EXE in the calculator.",
-                  W / 2, 110, C.MUTED, 1)
+    L.row4:text("No entries yet. Press EXE in the calculator.")
+    L.row4:color(COL.MUTED)
+    for i = 1, 7 do if i ~= 4 then L["row" .. i]:text("") end end
+    return
   end
-  local top = clamp(S.histSel - 4, 1, math.max(1, #S.hist - 7))
-  for row = 0, 7 do
-    local idx = top + row
+  local top = clamp(S.histSel - 4, 1, math.max(1, #S.hist - 6))
+  for i = 1, 7 do
+    local idx = top + i - 1
+    local y = 26 + (i - 1) * 25
     if idx <= #S.hist then
       local e = S.hist[idx]
-      local y = 28 + row * 24
       local on = idx == S.histSel
-      g.fill_rect(3, y, W - 6, 22, on and C.PANEL2 or C.PANEL)
-      g.rect(3, y, W - 6, 22, on and C.YELLOW or C.BORDER)
-      g.text(trunc(idx .. ". " .. e.expr .. "  = " .. e.result, 51),
-             8, y + 6, on and C.WHITE or C.MUTED, 1)
+      fill(3, y, W - 6, 23, on and C.PANEL2 or C.PANEL)
+      outline(3, y, W - 6, 23, on and C.YELLOW or C.BORDER)
+      L["row" .. i]:text(trunc(idx .. ". " .. e.expr .. " = " .. e.result, 44))
+      L["row" .. i]:color(on and COL.WHITE or COL.MUTED)
+    else
+      L["row" .. i]:text("")
     end
   end
-  g.text("UP/DN scroll   A recall expression   B back", 5, 228, C.MUTED, 1)
 end
 
-local MATRIX_PAD = {
-  "7", "8", "9", "CELL",
-  "4", "5", "6", "DIM",
-  "1", "2", "3", "A/B",
-  "0", ".", "-", "CLR",
-  "EXE", "BACK", "", "",
-}
-
-local function drawMatrixEditor()
-  g.clear(C.BG)
-  gradientRule()
+local function paintMatrix()
+  cv:clear("bg")
   local name = S.editWhich == 1 and "MatA" or "MatB"
-  g.text(name .. "  " .. S.matDim .. "x" .. S.matDim
-         .. (S.editFocus == 2 and "   [CELL]" or "   [PAD]"), 5, 7, C.WHITE, 1)
-  g.text(trunc("cell(" .. S.editR .. "," .. S.editC .. ") = " .. S.editBuf, 52),
-         5, 20, C.YELLOW, 1)
+  L.title:text(name .. "  " .. S.matDim .. "x" .. S.matDim
+               .. (S.editFocus == 2 and "   [CELL]" or "   [PAD]"))
+  L.buf:text(trunc("cell(" .. S.editR .. "," .. S.editC .. ") = " .. S.editBuf, 44))
 
   local m = S.editWhich == 1 and S.matA or S.matB
-  local cw, ch = 88, 36
+  local cw, ch = 88, 32
   local x0 = (W - S.matDim * cw) / 2
-  local y0 = 46
+  local y0 = 34
   for r = 1, S.matDim do
     for c = 1, S.matDim do
+      local i = (r - 1) * S.matDim + c
       local x, y = x0 + (c - 1) * cw, y0 + (r - 1) * ch
-      local on = S.editFocus == 2 and r == S.editR and c == S.editC
-      g.fill_rect(x, y, cw - 3, ch - 3, on and C.PANEL2 or C.PANEL)
-      g.rect(x, y, cw - 3, ch - 3, on and C.YELLOW or C.BORDER)
+      local on = (S.editFocus == 2 and r == S.editR and c == S.editC)
+      fill(x, y, cw - 3, ch - 3, on and C.PANEL2 or C.PANEL)
+      outline(x, y, cw - 3, ch - 3, on and C.YELLOW or C.BORDER)
+      local l = L["cell" .. i]
+      l:pos(x + 2, y + 9)
       local txt = (on and S.editBuf ~= "") and S.editBuf or fmt(m[r][c])
-      g.text_center(trunc(txt, 10), x + (cw - 3) / 2, y + 11,
-                    on and C.WHITE or C.MUTED, 1)
+      l:text(trunc(txt, 10))
+      l:color(on and COL.WHITE or COL.MUTED)
     end
   end
+  for i = S.matDim * S.matDim + 1, 9 do L["cell" .. i]:text("") end
 
   for i = 1, 20 do
-    local row = floor((i - 1) / 4)
-    local col = (i - 1) % 4
-    local label = MATRIX_PAD[i]
-    if label ~= "" then
-      local x, y = 10 + col * 76, 158 + row * 13
-      local on = S.editFocus == 1 and row + 1 == S.epr and col + 1 == S.epc
-      g.fill_rect(x, y, 73, 12, on and C.PANEL2 or C.PANEL)
-      g.rect(x, y, 73, 12, on and C.YELLOW or C.BORDER)
-      g.text_center(label, x + 36, y + 2, keyColor(label), 1)
+    local row, col = floor((i - 1) / 4), (i - 1) % 4
+    local lab = MATRIX_PAD[i]
+    if lab ~= "" then
+      local x, y = 10 + col * 60, 136 + row * 16
+      local on = (S.editFocus == 1 and row + 1 == S.epr and col + 1 == S.epc)
+      fill(x, y, 58, 15, on and C.PANEL2 or C.PANEL)
+      outline(x, y, 58, 15, on and C.YELLOW or C.BORDER)
     end
   end
-  g.text("A=type/select   B=backspace   EXE commit   CELL switch focus",
-         5, 228, C.MUTED, 1)
 end
 
-function on_draw()
-  if S.view == "graph" then drawGraph()
-  elseif S.view == "history" then drawHistory()
-  elseif S.view == "matrix" then drawMatrixEditor()
-  else drawCalc() end
+local HINTS = {
+  calc = "SEL type  CANCEL del/hold clear  hold LR cursor",
+  graph = "SEL cycle  CANCEL back  LR pan  UD zoom",
+  history = "UD scroll  SEL recall  CANCEL back",
+  matrix = "SEL select  CANCEL del  EXE commit  CELL focus",
+}
+
+local function refresh()
+  if S.builtView ~= S.view then buildView() end
+  if S.view == "graph" then paintGraph()
+  elseif S.view == "history" then paintHistory()
+  elseif S.view == "matrix" then paintMatrix()
+  else paintCalc() end
+  local h = HINTS[S.view] or ""
+  if h ~= S.hint then S.hint = h; ui.hint(h) end
 end
 
 ------------------------------------------------------------------------
--- 8. Input, actions and lifecycle callbacks
+-- 5. Input, actions and lifecycle callbacks
 ------------------------------------------------------------------------
 
 local function insertText(t)
@@ -1331,10 +1422,10 @@ local function moveCursor(d)
 end
 
 local function mapError(e)
-  if e:find("Syntax", 1, true) then return "Syntax Error", C.RED end
-  if e:find("Singular", 1, true) then return "Singular matrix", C.RED end
-  if e:find("No root", 1, true) then return "No root found", C.RED end
-  return "Math Error", C.RED
+  if e:find("Syntax", 1, true) then return "Syntax Error", COL.RED end
+  if e:find("Singular", 1, true) then return "Singular matrix", COL.RED end
+  if e:find("No root", 1, true) then return "No root found", COL.RED end
+  return "Math Error", COL.RED
 end
 
 local function execute()
@@ -1348,7 +1439,7 @@ local function execute()
     local msg, col = mapError(tostring(b or "Math Error"))
     setResult(msg, col)
   else
-    setResult(a, C.WHITE)
+    setResult(a, COL.WHITE)
     if finite(val) then S.ans, S.ansSet = val, true end
     addHistory(expr, a)
   end
@@ -1360,8 +1451,7 @@ local function clearMemory()
   S.ans, S.ansSet = 0, false
   S.matA, S.matB = newMatrix(S.matDim), newMatrix(S.matDim)
   S.expr, S.cursor = "", 1
-  setResult("Memory cleared", C.CYAN)
-  collectgarbage("collect")
+  setResult("Memory cleared", COL.CYAN)
   toast("CLEAR MEM")
 end
 
@@ -1428,7 +1518,7 @@ local function selectKey(label)
   elseif label == "DEL" then backspace()
   elseif label == "CLR" then
     S.expr, S.cursor = "", 1
-    setResult("", C.WHITE)
+    setResult("", COL.WHITE)
   elseif label == "<C" then moveCursor(-1)
   elseif label == "C>" then moveCursor(1)
   elseif label == "MODE" or label == "RAD/DEG" then
@@ -1440,31 +1530,43 @@ local function selectKey(label)
   elseif label == "EDIT" then enterMatrix()
   elseif label == "2x2" then setDim(2)
   elseif label == "3x3" then setDim(3)
-  elseif label == "EXIT" then badge.system.exit()
+  elseif label == "EXIT" then sys.exit()
   elseif TEMPLATES[label] then insertText(TEMPLATES[label])
   else insertText(label) end
 end
 
-function on_button(key, pressed)
-  if not pressed then
-    if key == "b" then S.bCleared = false end
+local function doBack()
+  if S.view == "graph" or S.view == "history" then
+    S.view = "calc"
+    refresh()
     return
   end
-  S.msg = ""
-
-  if key == "b" then
-    if S.view == "graph" or S.view == "history" then S.view = "calc"; return end
-    if S.view == "matrix" then
-      if S.editFocus == 2 then S.editFocus = 1
-      elseif S.editBuf ~= "" then S.editBuf = sub(S.editBuf, 1, -2)
-      else S.view = "calc" end
-      return
-    end
-    backspace()
+  if S.view == "matrix" then
+    if S.editFocus == 2 then S.editFocus = 1
+    elseif S.editBuf ~= "" then S.editBuf = sub(S.editBuf, 1, -2)
+    else S.view = "calc" end
+    refresh()
     return
   end
+  backspace()
+  refresh()
+end
 
-  if key == "a" then
+local function doClear()
+  if S.view == "calc" then
+    S.expr, S.cursor = "", 1
+    setResult("", COL.WHITE)
+  elseif S.view == "matrix" then
+    S.editBuf = ""
+  else
+    return
+  end
+  refresh()
+  toast("Cleared")
+end
+
+local function dispatchKey(key)
+  if key == "select" then
     if S.view == "graph" then
       if #S.gfeatures > 0 then
         S.gsel = S.gsel + 1
@@ -1486,24 +1588,15 @@ function on_button(key, pressed)
     else
       selectKey(PAGES[S.page][(S.kr - 1) * 6 + S.kc])
     end
-    return
-  end
-
-  if S.view == "graph" then
+  elseif S.view == "graph" then
     if key == "left" then panGraph(-0.1)
     elseif key == "right" then panGraph(0.1)
     elseif key == "up" then zoomGraph(0.8)
     elseif key == "down" then zoomGraph(1.25) end
-    return
-  end
-
-  if S.view == "history" then
+  elseif S.view == "history" then
     if key == "up" then S.histSel = clamp(S.histSel - 1, 1, math.max(1, #S.hist))
     elseif key == "down" then S.histSel = clamp(S.histSel + 1, 1, math.max(1, #S.hist)) end
-    return
-  end
-
-  if S.view == "matrix" then
+  elseif S.view == "matrix" then
     if S.editFocus == 2 then
       if key == "up" then S.editR = S.editR - 1
       elseif key == "down" then S.editR = S.editR + 1
@@ -1519,11 +1612,7 @@ function on_button(key, pressed)
       if S.epr < 1 then S.epr = 5 elseif S.epr > 5 then S.epr = 1 end
       if S.epc < 1 then S.epc = 4 elseif S.epc > 4 then S.epc = 1 end
     end
-    return
-  end
-
-  -- calculator keypad / tab navigation
-  if S.focusArea == 0 then
+  elseif S.focusArea == 0 then
     if key == "left" then S.tab = S.tab - 1
     elseif key == "right" then S.tab = S.tab + 1
     elseif key == "down" or key == "up" then S.focusArea = 1 end
@@ -1538,39 +1627,76 @@ function on_button(key, pressed)
     if S.kc < 1 then S.kc = 6 elseif S.kc > 6 then S.kc = 1 end
     if S.kr > 4 then S.kr = 1 end
   end
+  refresh()
 end
 
-function on_update(dt)
-  local now = badge.millis()
-  if S.msg ~= "" and now > S.msgUntil then S.msg = "" end
-
-  -- Long-press CANCEL = clear / long-press L/R = move the text cursor.
-  if bi.down("b") and bi.held_ms("b") > 650 and not S.bCleared then
-    if S.view == "calc" then
-      S.expr, S.cursor = "", 1
-      setResult("", C.WHITE)
-    elseif S.view == "matrix" then
-      S.editBuf = ""
+function on_key(key, rep)
+  if key == "back" then
+    if not rep and not S.backDown then
+      S.backDown = true
+      S.backT0 = sys.millis()
+      S.backFired = false
     end
-    S.bCleared = true
-    toast("Cleared")
+    return true
   end
-  if S.view == "calc" and now - S.curRepeat > 90 then
-    if bi.down("left") and bi.held_ms("left") > 450 then
-      moveCursor(-1); S.curRepeat = now
-    elseif bi.down("right") and bi.held_ms("right") > 450 then
-      moveCursor(1); S.curRepeat = now
+  -- In the calculator, left/right auto-repeat is used for the text cursor
+  -- by on_tick, so don't also scroll the keypad focus on repeats.
+  if rep and S.view == "calc" and (key == "left" or key == "right") then
+    return true
+  end
+  dispatchKey(key)
+  return true
+end
+
+function on_tick(ms)
+  local now = sys.millis()
+  local k = sys.keys and sys.keys() or {}
+
+  -- CANCEL: short press = delete/back, hold = clear the current buffer.
+  if S.backDown then
+    if not k.back then
+      S.backDown = false
+      if not S.backFired then doBack() end
+    elseif not S.backFired and now - S.backT0 > 650 then
+      S.backFired = true
+      doClear()
     end
   end
+
+  -- Hold left/right to move the expression cursor (90 ms repeat).
+  if S.view == "calc" then
+    if k.left then
+      if S.holdL == 0 then S.holdL = now end
+      if now - S.holdL > 450 and now - S.curRepeat > 90 then
+        moveCursor(-1)
+        S.curRepeat = now
+      end
+    else
+      S.holdL = 0
+    end
+    if k.right then
+      if S.holdR == 0 then S.holdR = now end
+      if now - S.holdR > 450 and now - S.curRepeat > 90 then
+        moveCursor(1)
+        S.curRepeat = now
+      end
+    else
+      S.holdR = 0
+    end
+  else
+    S.holdL, S.holdR = 0, 0
+  end
 end
 
-function on_start()
-  if badge.led and badge.led.take then badge.led.take() end
-  setResult("Ready", C.CYAN)
-  toast("D-PAD move   A select   B delete")
-  if badge.log then badge.log("sol_calc ready") end
+function on_exit()
+  -- Nothing to free explicitly; collectgarbage("collect") is unavailable.
 end
 
-function on_stop()
-  collectgarbage("collect")
-end
+------------------------------------------------------------------------
+-- Start
+------------------------------------------------------------------------
+
+ui.bg("bg")
+setResult("Ready", COL.CYAN)
+refresh()
+toast("D-PAD move   SELECT type   CANCEL delete")
