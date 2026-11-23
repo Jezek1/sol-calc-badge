@@ -1191,9 +1191,22 @@ local function visibleExpr()
   return part
 end
 
+local keyShown = {}
+
 local function paintCalc()
   cv:clear("bg")
   ln(0, 70, W, 70, C.BORDER)
+
+  -- The labels are created once per view, so refresh their text whenever the
+  -- active page changes (the canvas boxes below follow the same page).
+  for i = 1, 24 do
+    local lab = PAGES[S.page][i]
+    if keyShown[i] ~= lab then
+      L["key" .. i]:text(lab)
+      L["key" .. i]:color(keyColor(lab))
+      keyShown[i] = lab
+    end
+  end
 
   for i = 1, 5 do
     local x = 4 + (i - 1) * 62

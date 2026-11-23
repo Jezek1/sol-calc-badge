@@ -97,10 +97,13 @@ def key(k, rep=False):
 def tick(ms=30):
     g.on_tick(ms)
 
-def texts():
+def labels():
     objs = g.__objs()
-    return [objs[i]._text for i in range(1, len(objs) + 1)
+    return [objs[i] for i in range(1, len(objs) + 1)
             if objs[i].kind == 'label']
+
+def texts():
+    return [l._text for l in labels()]
 
 def back():
     key('back')
@@ -115,6 +118,19 @@ def show(title):
 def expect(part, title=''):
     assert any(part in t for t in texts()), (title or part, texts())
     print('  ok:', part)
+
+# ------------------------------------------------- page label refresh
+new_app()
+def keypad_texts():
+    return [l._text for l in labels()[8:32]]   # expr, status, result, 5 tabs, then keys
+
+assert keypad_texts()[0] == '7', keypad_texts()[:6]
+key('up'); key('right'); key('down')           # tab 1 -> 2, back to keypad
+show('page 2 keypad')
+assert keypad_texts()[:3] == ['sin(', 'cos(', 'tan('], keypad_texts()[:6]
+key('up'); key('right'); key('right'); key('down')  # page 4
+assert keypad_texts()[:4] == ['DET(', 'INV(', 'TRANS(', 'RREF('], keypad_texts()[:6]
+print('PAGE LABEL REFRESH OK')
 
 # ---------------------------------------------------------------- startup
 new_app()
