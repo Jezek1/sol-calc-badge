@@ -1,5 +1,11 @@
 # SOL CALC — Solana OS badge calculator
 
+> **Solana OS 2.4 / current App Store?** Use [`sol-calc-24/`](sol-calc-24/) —
+> it is a full rebuild for the Lua 5.5 `ui` / `sys` / `on_key` API (320×218).
+> The root `main.lua` below targets the older DEF CON `badge.gfx` / `on_button`
+> runtime and will not start on 2.4. See [sol-calc-24/README.md](sol-calc-24/README.md)
+> for install and submission steps.
+
 Single-file Lua app for the Solana OS SDK that exposes `badge.gfx`, `badge.input`
 and the `on_start` / `on_update` / `on_draw` / `on_button` callbacks
 (320×240, six buttons). No external modules, no `loadstring`, no blocking loop.

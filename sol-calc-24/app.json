@@ -1,0 +1,11 @@
+{
+  "id": "sol-calc-24",
+  "name": "SOL CALC 2.4",
+  "version": "2.0.0",
+  "author": "@Jezek1",
+  "summary": "Scientific & graphing calculator: solvers, calculus, matrices, plots.",
+  "icon": "edit",
+  "accent": "14F195",
+  "category": "tools",
+  "permissions": []
+}
